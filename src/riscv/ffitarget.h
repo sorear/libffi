@@ -1,6 +1,6 @@
 /* -----------------------------------------------------------------*-C-*-
    ffitarget.h - 2014 Michael Knyszek
-   
+
    Target configuration macros for RISC-V.
 
    Permission is hereby granted, free of charge, to any person obtaining
@@ -32,6 +32,10 @@
 #error "Please do not include ffitarget.h directly into your source.  Use ffi.h instead."
 #endif
 
+#ifndef __riscv
+#error "libffi was configured for a RISC-V target but this does not appear to be a RISC-V compiler."
+#endif
+
 #if __riscv_xlen != 64
 # error We currently only support RV64.
 #endif
@@ -46,41 +50,16 @@
 
 #ifndef LIBFFI_ASM
 
-typedef unsigned long ffi_arg; 
+typedef unsigned long ffi_arg;
 typedef   signed long ffi_sarg;
 
 typedef enum ffi_abi {
   FFI_FIRST_ABI = 0,
-  FFI_RV32,
-  FFI_RV32_SOFT_FLOAT,
-  FFI_RV64,
-  FFI_RV64_SOFT_FLOAT,
+  FFI_SYSV,
   FFI_LAST_ABI,
 
-#if __riscv_xlen == 64
-  #ifdef __riscv_soft_float
-    FFI_DEFAULT_ABI = FFI_RV64_SOFT_FLOAT
-  #else
-    FFI_DEFAULT_ABI = FFI_RV64
-  #endif
-#else
-  #ifdef __riscv_soft_float
-    FFI_DEFAULT_ABI = FFI_RV32_SOFT_FLOAT
-  #else
-    FFI_DEFAULT_ABI = FFI_RV32
-  #endif
-#endif /* __riscv_soft_float */
+  FFI_DEFAULT_ABI = FFI_SYSV
 } ffi_abi;
-
-#else
-
-#if __riscv_xlen == 64
-  #define REG_S sd
-  #define REG_L ld
-#else
-  #define REG_S sw
-  #define REG_L lw
-#endif
 
 #endif /* LIBFFI_ASM */
 
