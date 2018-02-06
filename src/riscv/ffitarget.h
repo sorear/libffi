@@ -32,7 +32,7 @@
 #error "Please do not include ffitarget.h directly into your source.  Use ffi.h instead."
 #endif
 
-#ifndef __riscv64
+#if __riscv_xlen != 64
 # error We currently only support RV64.
 #endif
 
@@ -57,7 +57,7 @@ typedef enum ffi_abi {
   FFI_RV64_SOFT_FLOAT,
   FFI_LAST_ABI,
 
-#ifdef __riscv64
+#if __riscv_xlen == 64
   #ifdef __riscv_soft_float
     FFI_DEFAULT_ABI = FFI_RV64_SOFT_FLOAT
   #else
@@ -74,7 +74,7 @@ typedef enum ffi_abi {
 
 #else
 
-#ifdef __riscv64
+#if __riscv_xlen == 64
   #define REG_S sd
   #define REG_L ld
 #else
