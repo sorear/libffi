@@ -49,7 +49,7 @@ typedef UINT32 uintreg;
 
 #define NARGREG 8
 #define STKALIGN 16
-#define MAXCOPYARG (2 * sizeof double)
+#define MAXCOPYARG (2 * sizeof(double))
 
 typedef struct call_context
 {
@@ -135,8 +135,8 @@ static float_struct_info struct_passed_as_elements(call_builder *cb, ffi_type *t
 #endif
 
 /* allocates a single register, float register, or XLEN-sized stack slot to a datum */
-static void marshal_atom(call_builder *cb, int type, char *data) {
-    size_t value;
+static void marshal_atom(call_builder *cb, int type, void *data) {
+    size_t value = 0;
     switch (type) {
         case FFI_TYPE_UINT8: value = *(uint8_t *)data; break;
         case FFI_TYPE_SINT8: value = *(int8_t *)data; break;
@@ -164,6 +164,7 @@ static void marshal_atom(call_builder *cb, int type, char *data) {
             asm("" : "=f"(cb->aregs->fa[cb->used_float++]) : "0"(*(double *)data));
             return;
 #endif
+        default: FFI_ASSERT(0); break;
     }
 
     if (cb->used_integer == NARGREG) {
@@ -173,7 +174,7 @@ static void marshal_atom(call_builder *cb, int type, char *data) {
     }
 }
 
-static void unmarshal_atom(call_builder *cb, int type, char *data) {
+static void unmarshal_atom(call_builder *cb, int type, void *data) {
     size_t value;
     switch (type) {
 #if ABI_FLEN >= 32
@@ -206,11 +207,12 @@ static void unmarshal_atom(call_builder *cb, int type, char *data) {
         case FFI_TYPE_SINT64: *(uint64_t *)data = value; break;
 #endif
         case FFI_TYPE_POINTER: *(size_t *)data = value; break;
+        default: FFI_ASSERT(0); break;
     }
 }
 
 /* adds an argument to a call, or a not by reference return value */
-static void marshal(call_builder *cb, ffi_type *type, bool var, char *data) {
+static void marshal(call_builder *cb, ffi_type *type, int var, void *data) {
     size_t realign[2];
 
 #if ABI_FLEN
@@ -219,7 +221,7 @@ static void marshal(call_builder *cb, ffi_type *type, bool var, char *data) {
         if (fsi.as_elements) {
             marshal_atom(cb, fsi.type1, data);
             if (fsi.offset2)
-                marshal_atom(cb, fsi.type2, data + fsi.offset2);
+                marshal_atom(cb, fsi.type2, ((char*)data) + fsi.offset2);
             return;
         }
     }
@@ -232,7 +234,7 @@ static void marshal(call_builder *cb, ffi_type *type, bool var, char *data) {
 
     if (type->size > 2 * __SIZEOF_POINTER__) {
         /* pass by reference */
-        marshal_atom(cb, FFI_TYPE_POINTER, (char*)&data);
+        marshal_atom(cb, FFI_TYPE_POINTER, &data);
     } else if (IS_INT(type->type) || type->type == FFI_TYPE_POINTER) {
         marshal_atom(cb, type->type, data);
     } else {
@@ -255,7 +257,7 @@ static void marshal(call_builder *cb, ffi_type *type, bool var, char *data) {
 }
 
 /* for arguments passed by reference returns the pointer, otherwise the arg is copied (up to MAXCOPYARG bytes) */
-static void *unmarshal(call_builder *cb, ffi_type *type, bool var, void *data) {
+static void *unmarshal(call_builder *cb, ffi_type *type, int var, void *data) {
     char realign[2 * __SIZEOF_POINTER__];
     void *pointer;
 
@@ -265,7 +267,7 @@ static void *unmarshal(call_builder *cb, ffi_type *type, bool var, void *data) {
         if (fsi.as_elements) {
             unmarshal_atom(cb, fsi.type1, data);
             if (fsi.offset2)
-                unmarshal_atom(cb, fsi.type2, data + fsi.offset2);
+                unmarshal_atom(cb, fsi.type2, ((char*)data) + fsi.offset2);
             return data;
         }
     }
@@ -303,11 +305,11 @@ static void *unmarshal(call_builder *cb, ffi_type *type, bool var, void *data) {
     }
 }
 
-static bool passed_by_ref(call_builder *cb, ffi_type *type, bool var) {
+static int passed_by_ref(call_builder *cb, ffi_type *type, int var) {
 #if ABI_FLEN
     if (!var && type->type == FFI_TYPE_STRUCT) {
-        float_struct_info fsi = struct_passed_as_floats(cb, type);
-        if (fsi.ok) return false;
+        float_struct_info fsi = struct_passed_as_elements(cb, type);
+        if (fsi.as_elements) return 0;
     }
 #endif
 
@@ -338,7 +340,7 @@ void ffi_call(ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue)
     size_t rval_bytes = 0;
     if (rvalue == NULL && cif->rtype->size > 2*__SIZEOF_POINTER__)
         rval_bytes = ALIGN(cif->rtype->size, STKALIGN);
-    size_t alloc_size = arg_bytes + rval_bytes + sizeof struct call_context;
+    size_t alloc_size = arg_bytes + rval_bytes + sizeof(call_context);
 
     /* the assembly code will deallocate all stack data at lower addresses
        than the argument region, so we need to allocate the frame and the
@@ -350,7 +352,7 @@ void ffi_call(ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue)
            guarantee alloca alignment to at least that much */
         alloc_base = (size_t)alloca(alloc_size);
     } else {
-        alloc_base = ALIGN(alloca(alloc_size + STKALIGN - 1, STKALIGN));
+        alloc_base = ALIGN(alloca(alloc_size + STKALIGN - 1), STKALIGN);
     }
 
     if (rval_bytes)
@@ -361,19 +363,19 @@ void ffi_call(ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue)
     cb.aregs = (call_context*)(alloc_base + arg_bytes + rval_bytes);
     cb.used_stack = (void*)alloc_base;
 
-    bool return_by_ref = passed_by_ref(&cb, cif->rtype);
+    int return_by_ref = passed_by_ref(&cb, cif->rtype, 0);
     if (return_by_ref)
-        marshall(&cb, &ffi_type_pointer, false, &rvalue);
+        marshal(&cb, &ffi_type_pointer, 0, &rvalue);
 
     int i;
     for (i = 0; i < cif->nargs; i++)
-        marshall(&cb, cif->arg_types[i], i >= cif->riscv_nfixedargs, avalue[i]);
+        marshal(&cb, cif->arg_types[i], i >= cif->riscv_nfixedargs, avalue[i]);
 
     ffi_call_asm((void*)alloc_base, cb.aregs, fn);
 
     cb.used_float = cb.used_integer = 0;
     if (!return_by_ref && rvalue)
-        unmarshall(&cb, cif->rtype, false, rvalue);
+        unmarshal(&cb, cif->rtype, 0, rvalue);
 }
 
 extern void ffi_closure_asm(void) FFI_HIDDEN;
@@ -408,7 +410,7 @@ ffi_status ffi_prep_closure_loc(ffi_closure *closure, ffi_cif *cif, void (*fun)(
 /* Called by the assembly code with aregs pointing to saved argument registers
    and stack pointing to the stacked arguments.  Return values passed in
    registers will be reloaded from aregs. */
-void FFI_HIDDEN ffi_closure_inner(char *stack, call_context *aregs, ffi_closure *closure) {
+void FFI_HIDDEN ffi_closure_inner(size_t *stack, call_context *aregs, ffi_closure *closure) {
     ffi_cif *cif = closure->cif;
     void **avalue = alloca(cif->nargs * sizeof(void*));
     /* storage for arguments which will be copied by unmarshal().  We could
@@ -418,27 +420,27 @@ void FFI_HIDDEN ffi_closure_inner(char *stack, call_context *aregs, ffi_closure 
     char *astorage = alloca(cif->nargs * MAXCOPYARG);
     void *rvalue;
     call_builder cb;
-    bool return_by_ref;
+    int return_by_ref;
     int i;
 
     cb.aregs = aregs;
     cb.used_integer = cb.used_float = 0;
     cb.used_stack = stack;
 
-    bool return_by_ref = passed_by_ref(&cb, cif->rtype);
+    return_by_ref = passed_by_ref(&cb, cif->rtype, 0);
     if (return_by_ref)
-        unmarshal(&cb, &ffi_type_pointer, false, &rvalue);
+        unmarshal(&cb, &ffi_type_pointer, 0, &rvalue);
     else
         rvalue = alloca(cif->rtype->size);
 
     for (i = 0; i < cif->nargs; i++)
-        avalue[i] = unmarshall(&cb, cif->arg_types[i],
+        avalue[i] = unmarshal(&cb, cif->arg_types[i],
             i >= cif->riscv_nfixedargs, astorage + i*MAXCOPYARG);
 
-    (closure->fun)(cif, rvalue, avlue, closure->user_data);
+    (closure->fun)(cif, rvalue, avalue, closure->user_data);
 
     if (!return_by_ref && cif->rtype->type != FFI_TYPE_VOID) {
         cb.used_integer = cb.used_float = 0;
-        marshal(&cb, cif->rtype, false, rvalue);
+        marshal(&cb, cif->rtype, 0, rvalue);
     }
 }
