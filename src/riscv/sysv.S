@@ -42,11 +42,11 @@
 #define SARG sw
 #endif
 
-#if __riscv_flen == 64
+#if __riscv_float_abi_double
 #define FLTS 8
 #define FLARG fld
 #define FSARG fsd
-#elif __riscv_flen == 32
+#elif __riscv_float_abi_single
 #define FLTS 4
 #define FLARG flw
 #define FSARG fsw
@@ -64,11 +64,15 @@
   struct call_context {
       floatreg fa[8];
       intreg a[8];
+      intreg pad[rv32 ? 2 : 0];
       intreg save_fp, save_ra;
   }
   void ffi_call_asm(void *stackargs, struct call_context *regargs,
       void (*fn)(void));
 */
+
+#define FRAME_LEN (8 * FLTS + 8 * PTRS + 16)
+
 ffi_call_asm:
     .cfi_startproc
 
@@ -83,13 +87,13 @@ ffi_call_asm:
       since the CFA is considered to be the saved stack pointer.
     */
 
-    .cfi_def_cfa 11, 8*FLTS + 10*PTRS # interim CFA based on a1
-    SARG    fp, 8*FLTS + 8*PTRS(a1)
+    .cfi_def_cfa 11, FRAME_LEN # interim CFA based on a1
+    SARG    fp, FRAME_LEN - 2*PTRS(a1)
     .cfi_offset 8, -2*PTRS
-    SARG    ra, 8*FLTS + 9*PTRS(a1)
+    SARG    ra, FRAME_LEN - 1*PTRS(a1)
     .cfi_offset 1, -1*PTRS
 
-    addi    fp, a1, 8*FLTS + 10*PTRS
+    addi    fp, a1, FRAME_LEN
     mv      sp, a0
     .cfi_def_cfa 8, 0 # our frame is fully set up
 
@@ -97,36 +101,36 @@ ffi_call_asm:
     mv      t1, a2
 
 #if FLTS
-    FLARG   fa0, -8*FLTS-10*PTRS(fp)
-    FLARG   fa1, -7*FLTS-10*PTRS(fp)
-    FLARG   fa2, -6*FLTS-10*PTRS(fp)
-    FLARG   fa3, -5*FLTS-10*PTRS(fp)
-    FLARG   fa4, -4*FLTS-10*PTRS(fp)
-    FLARG   fa5, -3*FLTS-10*PTRS(fp)
-    FLARG   fa6, -2*FLTS-10*PTRS(fp)
-    FLARG   fa7, -1*FLTS-10*PTRS(fp)
+    FLARG   fa0, -FRAME_LEN+0*FLTS(fp)
+    FLARG   fa1, -FRAME_LEN+1*FLTS(fp)
+    FLARG   fa2, -FRAME_LEN+2*FLTS(fp)
+    FLARG   fa3, -FRAME_LEN+3*FLTS(fp)
+    FLARG   fa4, -FRAME_LEN+4*FLTS(fp)
+    FLARG   fa5, -FRAME_LEN+5*FLTS(fp)
+    FLARG   fa6, -FRAME_LEN+6*FLTS(fp)
+    FLARG   fa7, -FRAME_LEN+7*FLTS(fp)
 #endif
 
-    LARG    a0, -10*PTRS(fp)
-    LARG    a1, -9*PTRS(fp)
-    LARG    a2, -8*PTRS(fp)
-    LARG    a3, -7*PTRS(fp)
-    LARG    a4, -6*PTRS(fp)
-    LARG    a5, -5*PTRS(fp)
-    LARG    a6, -4*PTRS(fp)
-    LARG    a7, -3*PTRS(fp)
+    LARG    a0, -FRAME_LEN+8*FLTS+0*PTRS(fp)
+    LARG    a1, -FRAME_LEN+8*FLTS+1*PTRS(fp)
+    LARG    a2, -FRAME_LEN+8*FLTS+2*PTRS(fp)
+    LARG    a3, -FRAME_LEN+8*FLTS+3*PTRS(fp)
+    LARG    a4, -FRAME_LEN+8*FLTS+4*PTRS(fp)
+    LARG    a5, -FRAME_LEN+8*FLTS+5*PTRS(fp)
+    LARG    a6, -FRAME_LEN+8*FLTS+6*PTRS(fp)
+    LARG    a7, -FRAME_LEN+8*FLTS+7*PTRS(fp)
 
     /* Call */
     jalr    t1
 
     /* Save return values - only a0/a1 (fa0/fa1) are used */
 #if FLTS
-    FSARG   fa0, -8*FLTS-10*PTRS(fp)
-    FSARG   fa1, -7*FLTS-10*PTRS(fp)
+    FSARG   fa0, -FRAME_LEN+0*FLTS(fp)
+    FSARG   fa1, -FRAME_LEN+1*FLTS(fp)
 #endif
 
-    SARG    a0, -10*PTRS(fp)
-    SARG    a1, -9*PTRS(fp)
+    SARG    a0, -FRAME_LEN+8*FLTS+0*PTRS(fp)
+    SARG    a1, -FRAME_LEN+8*FLTS+1*PTRS(fp)
 
     /* Restore and return */
     addi    sp, fp, -16
@@ -148,61 +152,65 @@ ffi_call_asm:
       void (*fn)(void));
 */
 
-#define CLOS_FRAME ((8*FLTS+10*PTRS+15)&~15)
     .globl ffi_closure_asm
     .hidden ffi_closure_asm
     .type ffi_closure_asm, @function
 ffi_closure_asm:
     .cfi_startproc
 
-    addi    sp,  sp, -CLOS_FRAME
-    .cfi_def_cfa_offset CLOS_FRAME
+    addi    sp,  sp, -FRAME_LEN
+    .cfi_def_cfa_offset FRAME_LEN
 
-    /* save RA */
-    SARG    ra, CLOS_FRAME-1*PTRS(sp)
+    /* make a frame */
+    SARG    fp, FRAME_LEN - 2*PTRS(sp)
+    .cfi_offset 8, -2*PTRS
+    SARG    ra, FRAME_LEN - 1*PTRS(sp)
     .cfi_offset 1, -1*PTRS
+    addi    fp, sp, FRAME_LEN
 
     /* save arguments */
 #if FLTS
-    FSARG   fa0, CLOS_FRAME-8*FLTS-10*PTRS(sp)
-    FSARG   fa1, CLOS_FRAME-7*FLTS-10*PTRS(sp)
-    FSARG   fa2, CLOS_FRAME-6*FLTS-10*PTRS(sp)
-    FSARG   fa3, CLOS_FRAME-5*FLTS-10*PTRS(sp)
-    FSARG   fa4, CLOS_FRAME-4*FLTS-10*PTRS(sp)
-    FSARG   fa5, CLOS_FRAME-3*FLTS-10*PTRS(sp)
-    FSARG   fa6, CLOS_FRAME-2*FLTS-10*PTRS(sp)
-    FSARG   fa7, CLOS_FRAME-1*FLTS-10*PTRS(sp)
+    FSARG   fa0, 0*FLTS(sp)
+    FSARG   fa1, 1*FLTS(sp)
+    FSARG   fa2, 2*FLTS(sp)
+    FSARG   fa3, 3*FLTS(sp)
+    FSARG   fa4, 4*FLTS(sp)
+    FSARG   fa5, 5*FLTS(sp)
+    FSARG   fa6, 6*FLTS(sp)
+    FSARG   fa7, 7*FLTS(sp)
 #endif
 
-    SARG    a0, CLOS_FRAME-10*PTRS(sp)
-    SARG    a1, CLOS_FRAME-9*PTRS(sp)
-    SARG    a2, CLOS_FRAME-8*PTRS(sp)
-    SARG    a3, CLOS_FRAME-7*PTRS(sp)
-    SARG    a4, CLOS_FRAME-6*PTRS(sp)
-    SARG    a5, CLOS_FRAME-5*PTRS(sp)
-    SARG    a6, CLOS_FRAME-4*PTRS(sp)
-    SARG    a7, CLOS_FRAME-3*PTRS(sp)
+    SARG    a0, 8*FLTS+0*PTRS(sp)
+    SARG    a1, 8*FLTS+1*PTRS(sp)
+    SARG    a2, 8*FLTS+2*PTRS(sp)
+    SARG    a3, 8*FLTS+3*PTRS(sp)
+    SARG    a4, 8*FLTS+4*PTRS(sp)
+    SARG    a5, 8*FLTS+5*PTRS(sp)
+    SARG    a6, 8*FLTS+6*PTRS(sp)
+    SARG    a7, 8*FLTS+7*PTRS(sp)
 
     /* enter C */
-    addi    a0, sp, CLOS_FRAME
-    addi    a1, sp, CLOS_FRAME-8*FLTS-10*PTRS
+    addi    a0, sp, FRAME_LEN
+    mv      a1, sp
     mv      a2, t1
 
     call    ffi_closure_inner
 
     /* return values */
 #if FLTS
-    FLARG   fa0, CLOS_FRAME-8*FLTS-10*PTRS(sp)
-    FLARG   fa1, CLOS_FRAME-7*FLTS-10*PTRS(sp)
+    FLARG   fa0, 0*FLTS(sp)
+    FLARG   fa1, 1*FLTS(sp)
 #endif
 
-    LARG    a0, CLOS_FRAME-10*PTRS(sp)
-    LARG    a1, CLOS_FRAME-9*PTRS(sp)
+    LARG    a0, 8*FLTS+0*PTRS(sp)
+    LARG    a1, 8*FLTS+1*PTRS(sp)
 
     /* restore and return */
-    LARG    ra, CLOS_FRAME-1*PTRS(sp)
+    LARG    ra, FRAME_LEN-1*PTRS(sp)
     .cfi_restore 1
-    addi    sp, sp, CLOS_FRAME
+    LARG    fp, FRAME_LEN-2*PTRS(sp)
+    .cfi_restore 8
+    addi    sp, sp, FRAME_LEN
     .cfi_def_cfa_offset 0
     ret
     .cfi_endproc

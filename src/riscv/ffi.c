@@ -1,6 +1,7 @@
 /* -----------------------------------------------------------------------
    ffi.c - Copyright (c) 2015 Michael Knyszek <mknyszek@berkeley.edu>
                          2015 Andrew Waterman <waterman@cs.berkeley.edu>
+                         2018 Stef O'Rear <sorear2@gmail.com>
    Based on MIPS N32/64 port
 
    RISC-V Foreign Function Interface
@@ -38,15 +39,117 @@ typedef UINT64 uintreg;
 typedef UINT32 uintreg;
 #endif
 
-struct call_context
+#if __riscv_float_abi_double
+#define ABI_FLEN 64
+#elif __riscv_float_abi_single
+#define ABI_FLEN 32
+#endif
+
+#define NARGREG 8
+#define STKALIGN 16
+#define MAXCOPYARG (2 * sizeof double)
+
+typedef struct call_context
 {
-    uintreg a[8];
-#if __riscv_flen == 64
+#if __riscv_float_abi_double
     double fa[8];
-#elif __riscv_flen == 32
+#elif __riscv_float_abi_single
     float fa[8];
 #endif
-};
+    uintreg a[8];
+    /* used by the assembly code to in-place construct its own stack frame */
+    char frame[16];
+} call_context;
+
+typedef struct call_builder
+{
+    call_context *aregs;
+    int used_integer;
+    int used_float;
+    void *used_stack;
+} call_builder;
+
+#if ABI_FLEN
+typedef struct {
+    char as_elements, type1, offset2, type2;
+} float_struct_info;
+
+#if ABI_FLEN >= 64
+#define IS_FLOAT(type) ((type) >= FFI_TYPE_FLOAT && (type) <= FFI_TYPE_DOUBLE)
+#else
+#define IS_FLOAT(type) ((type) == FFI_TYPE_FLOAT)
+#endif
+
+/* integer (not pointer) less than ABI XLEN */
+#if __SIZEOF_POINTER__ == 8
+#define IS_INT(type) ((type) == FFI_TYPE_INT || (type) >= FFI_TYPE_UINT8 && (type) <= FFI_TYPE_SINT64)
+#else
+#define IS_INT(type) ((type) == FFI_TYPE_INT || (type) >= FFI_TYPE_UINT8 && (type) <= FFI_TYPE_SINT32)
+#endif
+
+static ffi_type **flatten_struct(ffi_type *in, ffi_type **out, ffi_type **out_end) {
+    int i;
+    if (out == out_end) return out;
+    if (in->type != FFI_TYPE_STRUCT) {
+        *(out++) = in;
+    } else {
+        for (i = 0; in->elements[i]; i++)
+            out = flatten_struct(in->elements[i], out, out_end);
+    }
+    return out;
+}
+
+/* Structs with at most two fields after flattening, one of which is of
+   floating point type, are passed in multiple registers if sufficient
+   registers are available. */
+static float_struct_info struct_passed_as_elements(call_builder *cb, ffi_type *top) {
+    float_struct_info ret = {0, 0, 0, 0};
+    ffi_type *fields[3];
+    int num_floats, num_ints;
+    int num_fields = flatten_struct(top, fields, fields + 3) - fields;
+
+    if (num_fields == 1) {
+        if (IS_FLOAT(fields[0]->type)) {
+            ret.as_elements = 1;
+            ret.type1 = fields[0]->type;
+        }
+    } else if (num_fields == 2) {
+        num_floats = IS_FLOAT(fields[0]->type) + IS_FLOAT(fields[1]->type);
+        num_ints = IS_INT(fields[0]->type) + IS_INT(fields[1]->type);
+        if (num_floats == 0 || num_floats + num_ints != 2)
+            return ret;
+        if (cb->used_float + num_floats > NARGREG || cb->used_integer + (2 - num_floats) > NARGREG)
+            return ret;
+        if (!IS_FLOAT(fields[0]->type) && !IS_FLOAT(fields[1]->type))
+            return ret;
+
+        ret.type1 = fields[0]->type;
+        ret.type2 = fields[1]->type;
+        ret.offset2 = ALIGN(fields[0]->size, fields[1]->alignment);
+        ret.as_elements = 1;
+    }
+
+    return ret;
+}
+#endif
+
+/* adds an argument to a call, or a not by reference return value */
+static void marshall(call_builder *cb, ffi_type *type, bool var, void *data) {
+}
+
+/* for arguments passed by reference returns the pointer, otherwise the arg is copied (up to MAXCOPYARG bytes) */
+static void *unmarshall(call_builder *cb, ffi_type *type, bool var, void *data) { }
+
+static bool passed_by_ref(call_builder *cb, ffi_type *type, bool var) {
+#if ABI_FLEN
+    if (!var && type->type == FFI_TYPE_STRUCT) {
+        float_struct_info fsi = struct_passed_as_floats(cb, type);
+        if (fsi.ok) return false;
+    }
+#endif
+
+    return (type->size > 2 * __SIZEOF_POINTER__);
+}
 
 /* ffi_prep_args is called by the assembly routine once stack space
    has been allocated for the function's arguments */
@@ -314,7 +417,7 @@ static unsigned calc_riscv_return_struct_flags(int soft_float, ffi_type *arg)
    putting them into their proper registers in the
    assembly routine. */
 
-void ffi_prep_cif_machdep_flags(ffi_cif *cif, unsigned int isvariadic, unsigned int nfixedargs)
+static void ffi_prep_cif_machdep_flags(ffi_cif *cif, unsigned int isvariadic, unsigned int nfixedargs)
 {
     int type;
     unsigned arg_reg = 0;
@@ -448,7 +551,7 @@ void ffi_prep_cif_machdep_flags(ffi_cif *cif, unsigned int isvariadic, unsigned 
    allocate at least 8 pointer words and handle big structs
    being passed in registers. */
 
-void ffi_prep_cif_machdep_bytes(ffi_cif *cif)
+static void ffi_prep_cif_machdep_bytes(ffi_cif *cif)
 {
     int i;
     ffi_type **ptr;
@@ -499,37 +602,61 @@ ffi_status ffi_prep_cif_machdep_var(ffi_cif *cif, unsigned int nfixedargs, unsig
 {
     ffi_prep_cif_machdep_bytes(cif);
     ffi_prep_cif_machdep_flags(cif, 1, nfixedargs);
+    cif->riscv_nfixedargs = nfixedargs;
     cif->isvariadic = 1;
     return FFI_OK;
 }
 
 /* Low level routine for calling RV64 functions */
-extern int ffi_call_asm(void (*)(char *, extended_cif *, int, int),
-                         extended_cif *, unsigned, unsigned,
-                         unsigned *, void (*)(void))
-                         __attribute__((visibility("hidden")));
+extern void ffi_call_asm(void *stack, struct call_context *regs, void (*fn)(void)) FFI_HIDDEN;
 
 void ffi_call(ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue)
 {
-    extended_cif ecif;
-
-    ecif.cif = cif;
-    ecif.avalue = avalue;
-
-    /* If the return value is a struct and we don't have a return	*/
-    /* value address then we need to make one		                */
-
+    /* this is a conservative estimate, assuming the maximum size of each
+       argument and pretending all arguments go on the stack */
+    size_t arg_bytes = ALIGN(2 * sizeof(size_t) * (1 + cif->nargs), STKALIGN);
+    size_t rval_bytes = 0;
     if ((rvalue == NULL) && (cif->rtype->type == FFI_TYPE_STRUCT))
-        ecif.rvalue = alloca(cif->rtype->size);
-    else
-        ecif.rvalue = rvalue;
+        rval_bytes = ALIGN(cif->rtype->size, STKALIGN);
+    size_t alloc_size = arg_bytes + rval_bytes + sizeof struct call_context;
 
-    ffi_call_asm(ffi_prep_args, &ecif, cif->bytes, cif->flags, ecif.rvalue, fn);
+    /* the assembly code will deallocate all stack data at lower addresses
+       than the argument region, so we need to allocate the frame and the
+       return value after the arguments in a single allocation */
+    size_t alloc_base;
+    /* Argument region must be 16-byte aligned */
+    if (_Alignof(max_align_t) >= STKALIGN) {
+        /* since sizeof long double is normally 16, the compiler will
+           guarantee alloca alignment to at least that much */
+        alloc_base = (size_t)alloca(alloc_size);
+    } else {
+        alloc_base = ALIGN(alloca(alloc_size + STKALIGN - 1, STKALIGN));
+    }
+
+    if (rval_bytes)
+        rvalue = (void*)(alloc_base + arg_bytes);
+
+    call_builder cb;
+    cb.used_float = cb.used_integer = 0;
+    cb.aregs = (call_context*)(alloc_base + arg_bytes + rval_bytes);
+    cb.used_stack = (void*)alloc_base;
+
+    bool return_by_ref = passed_by_ref(&cb, cif->rtype);
+    if (return_by_ref)
+        marshall(&cb, &ffi_type_pointer, false, &rvalue);
+
+    int i;
+    for (i = 0; i < cif->nargs; i++)
+        marshall(&cb, cif->arg_types[i], i >= cif->riscv_nfixedargs, avalue[i]);
+
+    ffi_call_asm((void*)alloc_base, cb.aregs, fn);
+
+    cb.used_float = cb.used_integer = 0;
+    if (!return_by_ref && rvalue)
+        unmarshall(&cb, cif->rtype, false, rvalue);
 }
 
-#if FFI_CLOSURES
-
-extern void ffi_closure_asm(void) __attribute__((visibility("hidden")));
+extern void ffi_closure_asm(void) FFI_HIDDEN;
 
 ffi_status ffi_prep_closure_loc(ffi_closure *closure, ffi_cif *cif, void (*fun)(ffi_cif*,void*,void**,void*), void *user_data, void *codeloc)
 {
@@ -627,7 +754,7 @@ static void copy_struct(char *target, unsigned offset, ffi_abi abi, ffi_type *ty
 * Returns the function return flags.
 *
 */
-int ffi_closure_riscv_inner(ffi_closure *closure, void *rvalue, ffi_arg *ar, ffi_arg *fpr)
+static int ffi_closure_riscv_inner(ffi_closure *closure, void *rvalue, ffi_arg *ar, ffi_arg *fpr)
 {
     ffi_cif *cif;
     void **avaluep;
@@ -756,5 +883,3 @@ int ffi_closure_riscv_inner(ffi_closure *closure, void *rvalue, ffi_arg *ar, ffi
     (closure->fun) (cif, rvalue, avaluep, closure->user_data);
     return cif->flags >> (FFI_FLAG_BITS * 8);
 }
-
-#endif /* FFI_CLOSURES */
