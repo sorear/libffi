@@ -36,12 +36,6 @@
 #error "libffi was configured for a RISC-V target but this does not appear to be a RISC-V compiler."
 #endif
 
-#ifdef __LP64__
-# define FFI_SIZEOF_ARG 8
-#else
-# define FFI_SIZEOF_ARG 4
-#endif
-
 #ifndef LIBFFI_ASM
 
 typedef unsigned long ffi_arg;
@@ -64,7 +58,6 @@ typedef enum ffi_abi {
 #define FFI_NATIVE_RAW_API 0
 #define FFI_EXTRA_CIF_FIELDS unsigned riscv_nfixedargs; unsigned riscv_unused;
 #define FFI_TARGET_SPECIFIC_VARIADIC
-#define FFI_TARGET_SPECIFIC_STACK_SPACE_ALLOCATION
 
 #endif
 

@@ -33,12 +33,6 @@
 #include <stdlib.h>
 #include <stdint.h>
 
-#if __SIZEOF_POINTER__ == 8
-typedef UINT64 uintreg;
-#else
-typedef UINT32 uintreg;
-#endif
-
 #if __riscv_float_abi_double
 #define ABI_FLEN 64
 #define ABI_FLOAT double
