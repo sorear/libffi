@@ -323,14 +323,15 @@ ffi_status ffi_prep_cif_machdep_var(ffi_cif *cif, unsigned int nfixedargs, unsig
     return FFI_OK;
 }
 
-/* Low level routine for calling RV64 functions */
+/* Low level routine for calling functions */
 extern void ffi_call_asm(void *stack, struct call_context *regs, void (*fn)(void)) FFI_HIDDEN;
 
 void ffi_call(ffi_cif *cif, void (*fn)(void), void *rvalue, void **avalue)
 {
-    /* this is a conservative estimate, assuming the maximum size of each
-       argument and pretending all arguments go on the stack */
-    size_t arg_bytes = ALIGN(2 * sizeof(size_t) * (1 + cif->nargs), STKALIGN);
+    /* this is a conservative estimate, assuming a complex return value and
+       that all remaining arguments are long long / __int128 */
+    size_t arg_bytes = cif->nargs <= 3 ? 0 :
+        ALIGN(2 * sizeof(size_t) * (cif->nargs - 3), STKALIGN);
     size_t rval_bytes = 0;
     if (rvalue == NULL && cif->rtype->size > 2*__SIZEOF_POINTER__)
         rval_bytes = ALIGN(cif->rtype->size, STKALIGN);
@@ -377,7 +378,7 @@ extern void ffi_closure_asm(void) FFI_HIDDEN;
 ffi_status ffi_prep_closure_loc(ffi_closure *closure, ffi_cif *cif, void (*fun)(ffi_cif*,void*,void**,void*), void *user_data, void *codeloc)
 {
     uint32_t *tramp = (uint32_t *) &closure->tramp[0];
-    uint64_t fn = (uint64_t) ffi_closure_asm;
+    uint64_t fn = (uint64_t) (uintptr_t) ffi_closure_asm;
 
     if (cif->abi <= FFI_FIRST_ABI || cif->abi >= FFI_LAST_ABI)
         return FFI_BAD_ABI;

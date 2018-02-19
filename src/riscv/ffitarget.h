@@ -41,12 +41,17 @@
 typedef unsigned long ffi_arg;
 typedef   signed long ffi_sarg;
 
+/* FFI_UNUSED_NN and riscv_unused are to maintain ABI compatibility with a
+   distributed Berkeley patch from 2014, and can be removed at SONAME bump */
 typedef enum ffi_abi {
-  FFI_FIRST_ABI = 0,
-  FFI_SYSV,
-  FFI_LAST_ABI,
+    FFI_FIRST_ABI = 0,
+    FFI_SYSV,
+    FFI_UNUSED_1,
+    FFI_UNUSED_2,
+    FFI_UNUSED_3,
+    FFI_LAST_ABI,
 
-  FFI_DEFAULT_ABI = FFI_SYSV
+    FFI_DEFAULT_ABI = FFI_SYSV
 } ffi_abi;
 
 #endif /* LIBFFI_ASM */
