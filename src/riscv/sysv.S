@@ -67,7 +67,7 @@
       intreg pad[rv32 ? 2 : 0];
       intreg save_fp, save_ra;
   }
-  void ffi_call_asm(void *stackargs, struct call_context *regargs,
+  void ffi_call_asm(size_t *stackargs, struct call_context *regargs,
       void (*fn)(void));
 */
 
@@ -82,9 +82,8 @@ ffi_call_asm:
       a0, which is in the _caller's_ alloca area.  We establish our own stack
       frame at the end of the call_context.
 
-      This necessarily frees the alloca in the process, indeed gdb unwinding
-      will consider the alloca freed as soon as this function is entered,
-      since the CFA is considered to be the saved stack pointer.
+      Anything below the arguments will be freed at this point, although we
+      preserve the call_context so that it can be read back in the caller.
     */
 
     .cfi_def_cfa 11, FRAME_LEN # interim CFA based on a1
@@ -133,14 +132,12 @@ ffi_call_asm:
     SARG    a1, -FRAME_LEN+8*FLTS+1*PTRS(fp)
 
     /* Restore and return */
-    addi    sp, fp, -16
-    .cfi_def_cfa 2, 16
+    addi    sp, fp, -FRAME_LEN
+    .cfi_def_cfa 2, FRAME_LEN
     LARG    ra, -1*PTRS(fp)
     .cfi_restore 1
     LARG    fp, -2*PTRS(fp)
     .cfi_restore 8
-    addi    sp, sp, 16
-    .cfi_def_cfa_offset 0
     ret
     .cfi_endproc
     .size   ffi_call_asm, .-ffi_call_asm
@@ -148,8 +145,8 @@ ffi_call_asm:
 
 /*
   ffi_closure_asm. Expects address of the passed-in ffi_closure in t1.
-  void ffi_call_asm(void *stackargs, struct call_context *regargs,
-      void (*fn)(void));
+  void ffi_closure_inner(size_t *stackargs, struct call_context *regargs,
+      ffi_closure *closure);
 */
 
     .globl ffi_closure_asm

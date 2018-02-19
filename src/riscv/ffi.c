@@ -258,7 +258,7 @@ static void marshal(call_builder *cb, ffi_type *type, int var, void *data) {
 
 /* for arguments passed by reference returns the pointer, otherwise the arg is copied (up to MAXCOPYARG bytes) */
 static void *unmarshal(call_builder *cb, ffi_type *type, int var, void *data) {
-    char realign[2 * __SIZEOF_POINTER__];
+    size_t realign[2];
     void *pointer;
 
 #if ABI_FLEN
@@ -385,7 +385,11 @@ ffi_status ffi_prep_closure_loc(ffi_closure *closure, ffi_cif *cif, void (*fun)(
     uint32_t *tramp = (uint32_t *) &closure->tramp[0];
     uint64_t fn = (uint64_t) ffi_closure_asm;
 
-    FFI_ASSERT(tramp == codeloc);
+    if (cif->abi <= FFI_FIRST_ABI || cif->abi >= FFI_LAST_ABI)
+        return FFI_BAD_ABI;
+
+    /* we will call ffi_closure_inner with codeloc, not closure, but as long
+       as the memory is readable it should work */
 
     tramp[0] = 0x00000317; /* auipc t1, 0 (i.e. t0 <- codeloc) */
 #if __SIZEOF_POINTER__ == 8
